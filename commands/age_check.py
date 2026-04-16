@@ -9,39 +9,43 @@ class AgeCheck(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.last_checked_id = None
-        # Берем данные из конфига
-        self.group_id = config.GROUP_ID
-        self.cloud_api = config.ROBLOX_API_KEY
-        self.headers = {"x-api-key": self.cloud_api}
         
-        self.report_channel_id = 1480592830870192329
-        self.error_channel_id = 1480592830870192329
-        self.check_interval = 60
+        # Данные берутся напрямую из твоего config.py
+        self.GROUP_ID = config.GROUP_ID
+        self.CLOUD_API = config.ROBLOX_API_KEY
+        self.headers = {"x-api-key": self.CLOUD_API}
+        
+        self.REPORT_CHANNEL_ID = 1480592830870192329
+        self.ERROR_CHANNEL_ID = 1480592830870192329
+        self.CHECK_INTERVAL = 60
 
         self.STARTER_ASSET_IDS = [
             62724852, 144076436, 144076512, 10638267973, 10647852134, 
             382537569, 1772336109, 4047884939, 10638267973, 10647852134
         ]
         
-        # Запуск цикла
+        # Запуск цикла при инициализации кога
         self.check_loop.start()
 
     def cog_unload(self):
         self.check_loop.cancel()
 
-    @tasks.loop(seconds=60)
+    @tasks.loop(seconds=60) # Интервал 60 секунд
     async def check_loop(self):
-        # Ждем, пока бот полностью загрузится
+        # Ожидание готовности бота, чтобы избежать ошибок с None каналами
         await self.bot.wait_until_ready()
         
         try:
-            url = f"https://groups.roblox.com/v1/groups/{self.group_id}/users?sortOrder=Desc&limit=10"
-            # Используем asyncio для запросов в идеале, но пока оставим requests для простоты
+            url = f"https://groups.roblox.com/v1/groups/{self.GROUP_ID}/users?sortOrder=Desc&limit=10"
+            # Используем requests (в идеале лучше aiohttp, но оставляем твою логику)
             response = requests.get(url, headers=self.headers, timeout=10)
-            if response.status_code != 200: return
+            
+            if response.status_code != 200:
+                return
             
             members = response.json().get('data', [])
-            if not members: return
+            if not members:
+                return
 
             for member in reversed(members):
                 rbx_id = member['user']['userId']
@@ -59,7 +63,7 @@ class AgeCheck(commands.Cog):
                 self.last_checked_id = rbx_id
 
         except Exception as e:
-            print(f"Loop error: {e}")
+            await self.log_error(f"Loop error: {str(e)}")
 
     def perform_risk_check(self, rbx_id):
         risk = 0
@@ -72,7 +76,7 @@ class AgeCheck(commands.Cog):
 
             results = {}
             
-            # 1. Возраст
+            # 1. Возраст профиля
             created_str = u_info.get('created')
             if created_str:
                 created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
@@ -80,46 +84,83 @@ class AgeCheck(commands.Cog):
                 results['age_days'] = age_days
                 results['join_date'] = created_str[:10]
                 
-                if age_days < 14: risk += 60; reasons.append("Age < 2w")
-                elif age_days < 30: risk += 25; reasons.append("Age < 1m")
+                if age_days < 14: 
+                    risk += 60
+                    reasons.append("Account age < 2 weeks")
+                elif age_days < 30: 
+                    risk += 25
+                    reasons.append("Account age < 1 month")
+                elif age_days < 90: 
+                    risk += 10
+                    reasons.append("Account age < 3 months")
             
-            # 2. Аватар
+            # 2. Проверка аватара
             equipped = a_info.get('assets', [])
-            clothing_ids = [str(a.get('id')) for a in equipped]
-            results['clothing_list'] = ", ".join(clothing_ids[:10]) if clothing_ids else "None"
+            ignored_types = ['Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg', 'Head']
+            clothing_ids = [str(a.get('id')) for a in equipped if a.get('assetType', {}).get('name') not in ignored_types]
             
-            if not clothing_ids:
+            if clothing_ids:
+                matches = sum(1 for item_id in clothing_ids if int(item_id) in self.STARTER_ASSET_IDS)
+                match_percent = (matches / len(clothing_ids)) * 100
+                if match_percent >= 75: 
+                    risk += 35
+                    reasons.append(f"Starter items match ({round(match_percent)}%)")
+                results['clothing_list'] = ", ".join(clothing_ids)
+            else:
                 risk += 30
-                reasons.append("Empty avatar")
+                reasons.append("Empty avatar (No assets)")
+                results['clothing_list'] = "None"
 
             # 3. Друзья
             friends = f_info.get('count', 0)
             results['friends'] = friends
-            if friends < 5: risk += 40
-            elif friends < 10: risk += 30
+            if friends < 5:
+                risk += 40
+                reasons.append("Extremely low friends (<5)")
+            elif friends < 10:
+                risk += 30
+                reasons.append("Very low friends (<10)")
+            elif friends < 20:
+                risk += 10
+                reasons.append("Low friends (<20)")
 
-            results['reasons'] = ", ".join(reasons) if reasons else "Clean"
+            # 4. Бейджи
+            badges = b_info.get('data', [])
+            if not b_info.get('nextPageCursor') and len(badges) < 5:
+                risk += 15
+                reasons.append("Lack of badges")
+
+            results['reasons'] = ", ".join(reasons) if reasons else "None"
             results['total_risk'] = min(risk, 100)
             return results
-        except Exception as e:
-            print(f"Risk check error: {e}")
+        except:
             return None
 
     async def send_report(self, username, rbx_id, data):
-        channel = self.bot.get_channel(self.report_channel_id)
-        if not channel: return
+        channel = self.bot.get_channel(self.REPORT_CHANNEL_ID)
+        if not channel:
+            return
 
         risk = data['total_risk']
-        color = discord.Color.red() if risk > 70 else discord.Color.gold() if risk > 40 else discord.Color.green()
+        color = discord.Color.green() if risk < 40 else discord.Color.gold() if risk < 75 else discord.Color.red()
 
-        embed = discord.Embed(title=f"🛡️ Security Check: {username}", color=color)
-        embed.add_field(name="Account Age", value=f"{data['age_days']} days", inline=True)
-        embed.add_field(name="Risk", value=f"{risk}%", inline=True)
-        embed.add_field(name="Reasons", value=data['reasons'], inline=False)
-        
+        embed = discord.Embed(title=f"🛡️ {username} checkup", color=color)
+        embed.add_field(name="Username:", value=f"**{username}**", inline=True)
+        embed.add_field(name="Roblox ID:", value=f"`{rbx_id}`", inline=True)
+        embed.add_field(name="Roblox join date:", value=f"{data['join_date']} ({data['age_days']} days)", inline=False)
+        embed.add_field(name="Group join date:", value=data['group_join'], inline=False)
+        embed.add_field(name="Risk level:", value=f"**{risk}%**", inline=True)
+        embed.add_field(name="Equipped Assets (IDs):", value=data.get('clothing_list', 'N/A')[:1024], inline=False)
+        embed.add_field(name="Reason of increasing risk:", value=data['reasons'], inline=False)
+
         await channel.send(embed=embed)
 
-# Функция для загрузки кога в основной main.py
+    async def log_error(self, error_msg):
+        channel = self.bot.get_channel(self.ERROR_CHANNEL_ID)
+        if channel:
+            await channel.send(f"❌ **System Error (AgeCheck)**: {error_msg}")
+
+# Функция загрузки для main.py
 async def setup(bot):
     await bot.add_cog(AgeCheck(bot))
-              
+    
