@@ -34,7 +34,8 @@ class AltDetector(commands.Cog):
         
         try:
             # Получаем список участников (новые сверху)
-            url = f"https://groups.roblox.com/v1/groups/{GROUP_ID}/roles/593902054/users?limit=50&sortOrder=Desc"
+            url = f"https://groups.roblox.com/v1/groups/{config.GROUP_ID}/roles/593902054/users?limit=50&sortOrder=Desc"
+
             response = requests.get(url, headers=self.headers, timeout=10)
             
             if response.status_code != 200:
