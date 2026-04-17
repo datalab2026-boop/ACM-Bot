@@ -8,21 +8,25 @@ import config
 class AltDetector(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.last_top_user_id = None  # ID самого верхнего пользователя
+        self.last_top_user_id = None  # ID самого верхнего пользователя (якорь)
         self.is_initialized = False
         
+        # Данные берутся из твоего config.py
         self.GROUP_ID = config.GROUP_ID
         self.CLOUD_API = config.ROBLOX_API_KEY
         self.headers = {"x-api-key": self.CLOUD_API}
         
+        # Каналы для отчетов и ошибок
         self.REPORT_CHANNEL_ID = 1480592830870192329
         self.ERROR_CHANNEL_ID = 1480592830870192329
 
+        # Список ID стартовых вещей аватара
         self.STARTER_ASSET_IDS = [
             62724852, 144076436, 144076512, 10638267973, 10647852134, 
             382537569, 1772336109, 4047884939, 10638267973, 10647852134
         ]
         
+        # Запуск цикла
         self.check_loop.start()
 
     def cog_unload(self):
@@ -33,9 +37,9 @@ class AltDetector(commands.Cog):
         await self.bot.wait_until_ready()
         
         try:
-            # Получаем список участников (новые сверху)
-            url = f"https://groups.roblox.com/v1/groups/{config.GROUP_ID}/roles/593902054/users?limit=50&sortOrder=Desc"
-
+            # Запрос к списку участников конкретной роли (новые всегда наверху)
+            # Мы используем self.GROUP_ID, так как переменная инициализирована в __init__
+            url = f"https://groups.roblox.com/v1/groups/{self.GROUP_ID}/roles/593902054/users?limit=50&sortOrder=Desc"
             response = requests.get(url, headers=self.headers, timeout=10)
             
             if response.status_code != 200:
@@ -48,11 +52,12 @@ class AltDetector(commands.Cog):
             members_to_check = []
 
             if not self.is_initialized:
-                # ПРИ СТАРТЕ: Берем 5 самых верхних
+                # ПРИ ПЕРВОМ ЗАПУСКЕ: Берем 5 самых верхних (свежих)
+                # Разворачиваем список, чтобы обрабатывать их от "старых к новым"
                 members_to_check = list(reversed(data[:5]))
                 self.is_initialized = True
             else:
-                # ПОСЛЕ РЕСТАРТА: Ищем позицию прошлого "самого верхнего"
+                # ПОСЛЕ ЗАПУСКА: Ищем позицию нашего "якоря"
                 found_anchor_index = -1
                 for i, member in enumerate(data):
                     if member['user']['userId'] == self.last_top_user_id:
@@ -60,25 +65,26 @@ class AltDetector(commands.Cog):
                         break
                 
                 if found_anchor_index == -1:
-                    # Если старый топ не найден, проверяем только самого нового
+                    # Если старый топ не найден (ушел глубоко вниз), проверяем только 1 самого нового
                     members_to_check = [data[0]]
                 else:
-                    # Берем всех, кто выше него в списке (индексы от 0 до anchor)
+                    # Берем всех, кто стоит в списке ВЫШЕ нашего якоря (индексы от 0 до anchor)
                     new_entries = data[0:found_anchor_index]
                     members_to_check = list(reversed(new_entries))
 
+            # Проверка каждого нового участника
             for member in members_to_check:
                 rbx_id = member['user']['userId']
                 username = member['user']['username']
                 
                 risk_data = self.perform_risk_check(rbx_id)
                 if risk_data:
-                    # Передаем дату вступления в группу, если она есть
+                    # Дата вступления в группу (из данных участника)
                     group_join = member.get('created', 'Unknown')
                     risk_data['group_join'] = group_join[:10] if group_join != 'Unknown' else 'N/A'
                     await self.send_report(username, rbx_id, risk_data)
 
-            # Обновляем "якорь" самого верхнего
+            # В конце каждой проверки обновляем "якорь" (самый верхний юзер в списке)
             self.last_top_user_id = data[0]['user']['userId']
 
         except Exception as e:
@@ -88,7 +94,7 @@ class AltDetector(commands.Cog):
         risk = 0
         reasons = []
         try:
-            # Твоя оригинальная логика рисков
+            # Сбор данных профиля через публичные API
             u_info = requests.get(f"https://users.roblox.com/v1/users/{rbx_id}").json()
             f_info = requests.get(f"https://friends.roblox.com/v1/users/{rbx_id}/friends/count").json()
             b_info = requests.get(f"https://badges.roblox.com/v1/users/{rbx_id}/badges?limit=10").json()
@@ -96,7 +102,7 @@ class AltDetector(commands.Cog):
 
             results = {}
             
-            # Возраст профиля
+            # 1. Возраст профиля
             created_str = u_info.get('created')
             if created_str:
                 created_dt = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
@@ -108,7 +114,7 @@ class AltDetector(commands.Cog):
                 elif age_days < 30: risk += 25; reasons.append("Account age < 1 month")
                 elif age_days < 90: risk += 10; reasons.append("Account age < 3 months")
             
-            # Аватар
+            # 2. Проверка аватара на стартовые вещи
             equipped = a_info.get('assets', [])
             ignored_types = ['Torso', 'LeftArm', 'RightArm', 'LeftLeg', 'RightLeg', 'Head']
             clothing_ids = [str(a.get('id')) for a in equipped if a.get('assetType', {}).get('name') not in ignored_types]
@@ -121,15 +127,15 @@ class AltDetector(commands.Cog):
                     reasons.append(f"Starter items match ({round(match_percent)}%)")
                 results['clothing_list'] = ", ".join(clothing_ids)
             else:
-                risk += 30; reasons.append("Empty avatar"); results['clothing_list'] = "None"
+                risk += 30; reasons.append("Empty avatar (No assets)"); results['clothing_list'] = "None"
 
-            # Друзья
+            # 3. Количество друзей
             friends = f_info.get('count', 0)
             results['friends'] = friends
             if friends < 5: risk += 40; reasons.append("Extremely low friends (<5)")
             elif friends < 20: risk += 10; reasons.append("Low friends (<20)")
 
-            # Бейджи
+            # 4. Наличие бейджей
             badges = b_info.get('data', [])
             if not b_info.get('nextPageCursor') and len(badges) < 5:
                 risk += 15; reasons.append("Lack of badges")
@@ -147,7 +153,7 @@ class AltDetector(commands.Cog):
         risk = data['total_risk']
         color = discord.Color.green() if risk < 40 else discord.Color.gold() if risk < 75 else discord.Color.red()
 
-        # ВОЗВРАЩЕНО ТВОЕ МЕНЮ
+        # Формат эмбеда строго по твоему запросу
         embed = discord.Embed(title=f"🛡️ AltDetector Checkup", color=color)
         embed.add_field(name="Username:", value=f"**{username}**", inline=True)
         embed.add_field(name="User ID:", value=f"`{rbx_id}`", inline=True)
@@ -164,4 +170,4 @@ class AltDetector(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(AltDetector(bot))
-    
+                
