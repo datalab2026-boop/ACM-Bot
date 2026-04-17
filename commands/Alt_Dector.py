@@ -16,8 +16,8 @@ class AltDetector(commands.Cog):
         self.headers = {"x-api-key": self.CLOUD_API}
         
         self.ROLE_ID = 593902054
-        self.REPORT_CHANNEL_ID = 1480592830870192329
-        self.ERROR_CHANNEL_ID = 1480592830870192329
+        self.REPORT_CHANNEL_ID = 1494677345263681668
+        self.ERROR_CHANNEL_ID = 1494676707955835011
 
         self.STARTER_ASSET_IDS = [
             62724852, 144076436, 144076512, 10638267973, 10647852134, 
