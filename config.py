@@ -8,8 +8,8 @@ RESTART_TOKEN = os.environ.get("Restarttoken")
 # Настройки каналов и ролей
 GROUP_ID = 14543769
 ALLOWED_ROLE_ID = 1487518138974208142 # ID роли в Discord
-LOG_CHANNEL_ID = 1472882955557929001
-ERROR_CHANNEL_ID = 1500544973010112632
+LOG_CHANNEL_ID = 1457853165004263574
+ERROR_CHANNEL_ID = 1457853165004263574
 
 # Полный словарь для работы бота (оставляем все ID для корректной работы)
 ROLE_IDS = {
